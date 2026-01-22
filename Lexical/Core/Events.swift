@@ -13,11 +13,15 @@ import UIKit
 // before calling onInsertTextFromUITextView().
 
 internal func onInsertTextFromUITextView(text: String, editor: Editor, updateMode: UpdateBehaviourModificationMode = UpdateBehaviourModificationMode()) throws {
+  print("📝 LEXICAL onInsertTextFromUITextView: text='\(text)'")
   try editor.updateWithCustomBehaviour(mode: updateMode) {
+    print("📝 LEXICAL inside editor.updateWithCustomBehaviour")
     guard let selection = try getSelection() else {
       editor.log(.UITextView, .error, "Expected a selection here")
       return
     }
+
+    print("📝 LEXICAL got selection: \(type(of: selection))")
 
     if let markedTextOperation = updateMode.markedTextOperation, markedTextOperation.createMarkedText == true, let rangeSelection = selection as? RangeSelection {
       // Here we special case STARTING or UPDATING a marked text operation.
@@ -30,13 +34,18 @@ internal func onInsertTextFromUITextView(text: String, editor: Editor, updateMod
     }
 
     if text == "\n" || text == "\u{2029}" {
+      print("📝 LEXICAL inserting paragraph")
       try selection.insertParagraph()
     } else if text == "\u{2028}" {
+      print("📝 LEXICAL inserting line break")
       try selection.insertLineBreak(selectStart: false)
     } else {
+      print("📝 LEXICAL calling selection.insertText")
       try selection.insertText(text)
+      print("📝 LEXICAL selection.insertText completed - dirty nodes should be created now")
     }
   }
+  print("📝 LEXICAL editor.updateWithCustomBehaviour completed")
 }
 
 internal func onInsertLineBreakFromUITextView(editor: Editor) throws {
@@ -273,13 +282,16 @@ public func registerRichText(editor: Editor) {
     type: .insertText,
     listener: { [weak editor] payload in
       guard let editor else { return false }
+      print("📝 LEXICAL .insertText command listener called")
       do {
         guard let text = payload as? String else {
           editor.log(.TextView, .warning, "insertText missing payload")
           return false
         }
 
+        print("📝 LEXICAL calling onInsertTextFromUITextView with text: '\(text)'")
         try onInsertTextFromUITextView(text: text, editor: editor)
+        print("📝 LEXICAL onInsertTextFromUITextView completed")
         return true
       } catch {
         editor.log(.TextView, .error, "Exception in insertText; \(String(describing: error))")

@@ -175,6 +175,7 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
   }
 
   override public func insertText(_ text: String) {
+    print("📝 LEXICAL TextView.insertText called with text: '\(text)'")
     editor.log(.UITextView, .verbose, "Text view selected range \(String(describing: self.selectedRange))")
 
     let expectedSelectionLocation = selectedRange.location + text.lengthAsNSString()
@@ -191,7 +192,9 @@ protocol LexicalTextViewDelegate: NSObjectProtocol {
     }
 
     textStorage.mode = TextStorageEditingMode.controllerMode
+    print("📝 LEXICAL dispatching .insertText command")
     editor.dispatchCommand(type: .insertText, payload: text)
+    print("📝 LEXICAL .insertText command completed")
     textStorage.mode = TextStorageEditingMode.none
 
     // check if we need to send a selectionChanged (i.e. something unexpected happened)
