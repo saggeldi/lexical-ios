@@ -30,11 +30,15 @@ public class EditorHistory {
   var delay: Int
   var prevChangeTime: Double
   var prevChangeType: ChangeType
+  private var isApplyingChange = false
+  private var isUndoingOrRedoing = false
+  private var lastTextContent: String = ""
+  private var restoringState: EditorState?  // Track state being restored during undo/redo
 
-  public init(editor: Editor, externalHistoryState: HistoryState, delay: Int = 5) {
+  public init(editor: Editor, externalHistoryState: HistoryState, delay: Int = 500) {
     self.editor = editor
     self.externalHistoryState = externalHistoryState
-    self.delay = delay
+    self.delay = delay  // delay in milliseconds
     self.prevChangeTime = 0
     self.prevChangeType = .other
   }
@@ -44,6 +48,15 @@ public class EditorHistory {
     prevEditorState: EditorState,
     dirtyNodes: DirtyNodeMap
   ) {
+    // Skip if we're in the middle of an undo/redo operation
+    // This prevents the undo/redo state restoration from being recorded as a new change
+    guard !isUndoingOrRedoing else { return }
+
+    // Prevent re-entrancy
+    guard !isApplyingChange else { return }
+    isApplyingChange = true
+    defer { isApplyingChange = false }
+
     guard let editor else {
       return
     }
@@ -55,11 +68,61 @@ public class EditorHistory {
       return
     }
 
-    if historyState.current == nil {
+    // Get current text content for tracking
+    var currentTextContent = ""
+    do {
+      try editorState.read {
+        if let root = getRoot() {
+          currentTextContent = root.getTextContent()
+        }
+      }
+    } catch {}
+
+    // Check if this is a meaningful change (content or formatting)
+    // We already know editorState != currentEditorState (checked above)
+    // So the state HAS changed - could be selection, content, or formatting
+
+    // Get previous text content from current history entry for comparison
+    var previousTextContent = ""
+    if let currentEntry = historyState.current {
+      do {
+        try currentEntry.editorState.read {
+          if let root = getRoot() {
+            previousTextContent = root.getTextContent()
+          }
+        }
+      } catch {}
+    }
+
+    // Detect if content changed (text is different)
+    let hasTextChange = currentTextContent != previousTextContent
+
+    // If text is the same but state is different, it could be:
+    // 1. Selection-only change - we don't want to track
+    // 2. Formatting change (bold, italic, etc.) - we DO want to track
+    //
+    // Since we can't easily distinguish, we'll track all state changes
+    // The editor state comparison already filtered out truly identical states
+
+    // Update lastTextContent for future comparisons
+    lastTextContent = currentTextContent
+
+    // Always consider it a change worth tracking if we got here
+    // (state is different from current history entry)
+    let hasContentChange = true
+
+    // Track if this is the first change (current was nil)
+    let isFirstChange = historyState.current == nil
+
+    if isFirstChange {
+      // First change - just set current to the NEW state, don't push anything to undo stack
+      // This prevents the initial empty state from being undoable
       historyState.current = HistoryStateEntry(
         editor: editor,
-        editorState: prevEditorState,
-        undoSelection: prevEditorState.selection?.clone() as? RangeSelection)
+        editorState: editorState,
+        undoSelection: editorState.selection?.clone() as? RangeSelection)
+      externalHistoryState = historyState
+      return
     }
 
     do {
@@ -67,7 +130,8 @@ public class EditorHistory {
         prevEditorState: prevEditorState,
         nextEditorState: editorState,
         currentHistoryEntry: historyState.current,
-        dirtyNodes: dirtyNodes)
+        dirtyNodes: dirtyNodes,
+        hasContentChange: hasContentChange)
 
       if mergeAction == .historyPush {
         if !historyState.redoStack.isEmpty {
@@ -75,12 +139,13 @@ public class EditorHistory {
           editor.dispatchCommand(type: .canRedo, payload: false)
         }
 
+        // Push current state to undo stack (this is the state BEFORE the change)
         if let current = historyState.current, let editor = current.editor {
           historyState.undoStack.append(
             HistoryStateEntry(
               editor: editor,
               editorState: current.editorState,
-              undoSelection: prevEditorState.selection?.clone() as? RangeSelection))
+              undoSelection: current.undoSelection))
         }
 
         editor.dispatchCommand(type: .canUndo, payload: true)
@@ -88,6 +153,7 @@ public class EditorHistory {
         return
       }
 
+      // Update current to the new state
       historyState.current = HistoryStateEntry(
         editor: editor,
         editorState: editorState,
@@ -105,17 +171,26 @@ public class EditorHistory {
       let editor
     else { return }
 
+    // Prevent applyChange from recording this as a new change
+    // Keep the flag true until after setEditorState completes
+    isUndoingOrRedoing = true
+
     var historyStateEntry = externalHistoryState.undoStack.removeLast()
     if let current = externalHistoryState.current {
       externalHistoryState.redoStack.append(current)
-      editor.dispatchCommand(type: .canRedo, payload: true)
-    }
-
-    if externalHistoryState.undoStack.count == 0 {
-      editor.dispatchCommand(type: .canUndo, payload: false)
     }
 
     externalHistoryState.current = historyStateEntry
+
+    // Update lastTextContent to match the restored state
+    do {
+      try historyStateEntry.editorState.read {
+        if let root = getRoot() {
+          lastTextContent = root.getTextContent()
+        }
+      }
+    } catch {}
+
     do {
       if let editor = historyStateEntry.editor,
         let undoSelection = historyStateEntry.undoSelection
@@ -128,6 +203,15 @@ public class EditorHistory {
       editor.log(.other, .warning, "undo: Failed to setEditorState: \(error.localizedDescription)")
     }
 
+    // Reset flag AFTER setEditorState completes
+    isUndoingOrRedoing = false
+
+    // Dispatch commands after flag is reset to update UI properly
+    if externalHistoryState.undoStack.count == 0 {
+      editor.dispatchCommand(type: .canUndo, payload: false)
+    }
+    editor.dispatchCommand(type: .canRedo, payload: true)
+
     self.externalHistoryState = externalHistoryState
   }
 
@@ -137,23 +221,40 @@ public class EditorHistory {
       let editor
     else { return }
 
+    // Prevent applyChange from recording this as a new change
+    // Keep the flag true until after setEditorState completes
+    isUndoingOrRedoing = true
+
     if let current = externalHistoryState.current {
       externalHistoryState.undoStack.append(current)
-      editor.dispatchCommand(type: .canUndo, payload: true)
     }
 
     let historyStateEntry = externalHistoryState.redoStack.removeLast()
-    if externalHistoryState.redoStack.count == 0 {
-      editor.dispatchCommand(type: .canRedo, payload: false)
-    }
-
     externalHistoryState.current = historyStateEntry
+
+    // Update lastTextContent to match the restored state
+    do {
+      try historyStateEntry.editorState.read {
+        if let root = getRoot() {
+          lastTextContent = root.getTextContent()
+        }
+      }
+    } catch {}
 
     do {
       try editor.setEditorState(historyStateEntry.editorState.clone(selection: historyStateEntry.undoSelection))
       editor.dispatchCommand(type: .updatePlaceholderVisibility)
     } catch {
       editor.log(.other, .warning, "redo: Failed to setEditorState: \(error.localizedDescription)")
+    }
+
+    // Reset flag AFTER setEditorState completes
+    isUndoingOrRedoing = false
+
+    // Dispatch commands after flag is reset to update UI properly
+    editor.dispatchCommand(type: .canUndo, payload: true)
+    if externalHistoryState.redoStack.count == 0 {
+      editor.dispatchCommand(type: .canRedo, payload: false)
     }
 
     self.externalHistoryState = externalHistoryState
@@ -175,9 +276,12 @@ public class EditorHistory {
     prevEditorState: EditorState?,
     nextEditorState: EditorState,
     currentHistoryEntry: HistoryStateEntry?,
-    dirtyNodes: DirtyNodeMap
+    dirtyNodes: DirtyNodeMap,
+    hasContentChange: Bool = true
   ) throws -> MergeAction {
-    guard let editor else { return .discardHistoryCandidate }
+    guard let editor else {
+      return .discardHistoryCandidate
+    }
     let changeTime = Date().timeIntervalSince1970
 
     if prevChangeTime == 0 {
@@ -190,34 +294,29 @@ public class EditorHistory {
       dirtyLeavesSet: dirtyNodes,
       isComposing: editor.isComposing())
 
-    let selection = nextEditorState.selection
-    let prevSelection = prevEditorState?.selection
-    let hasDirtyNodes = dirtyNodes.count > 0
-    if !hasDirtyNodes {
-      if prevSelection == nil && selection != nil {
+    let isSameEditor = currentHistoryEntry == nil || currentHistoryEntry?.editor == self.editor
+
+    // If content actually changed, we should track it
+    if hasContentChange {
+      // Convert delay from milliseconds to seconds for comparison
+      let delayInSeconds = Double(self.delay) / 1000.0
+
+      // Merge if: within the delay window (e.g., rapid typing within 500ms)
+      // This groups rapid keystrokes into a single undo action
+      if changeTime < prevChangeTime + delayInSeconds && isSameEditor {
         prevChangeTime = changeTime
         prevChangeType = changeType
-
         return .historyMerge
       }
 
-      // since we're discarding the candidate, do not cache the prev change time/type
-      return .discardHistoryCandidate
-    }
-
-    let isSameEditor = currentHistoryEntry == nil || currentHistoryEntry?.editor == self.editor
-
-    if changeType != .other && changeType == prevChangeType && changeTime < prevChangeTime + Double(self.delay) && isSameEditor {
+      // Otherwise, push a new history entry
       prevChangeTime = changeTime
       prevChangeType = changeType
-
-      return .historyMerge
+      return .historyPush
     }
 
-    prevChangeTime = changeTime
-    prevChangeType = changeType
-
-    return .historyPush
+    // No content change - discard
+    return .discardHistoryCandidate
   }
 }
 
