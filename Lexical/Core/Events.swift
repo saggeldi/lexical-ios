@@ -34,11 +34,70 @@ internal func onInsertTextFromUITextView(text: String, editor: Editor, updateMod
     }
 
     if text == "\n" || text == "\u{2029}" {
-      print("📝 LEXICAL inserting paragraph")
-      try selection.insertParagraph()
+      print("📝 LEXICAL checking for empty list item before insertParagraph")
+      // Check if we're in an empty list item - if so, exit the list instead of creating a new item
+      var handledByListExit = false
+      if let rangeSelection = selection as? RangeSelection, rangeSelection.isCollapsed() {
+        let anchorNode = try? rangeSelection.anchor.getNode()
+        // Walk up to find ListItemNode
+        var current: Node? = anchorNode
+        var listItemNode: ElementNode? = nil
+        while let currentNode = current {
+          if type(of: currentNode).getType() == NodeType(rawValue: "listitem") {
+            listItemNode = currentNode as? ElementNode
+            break
+          }
+          current = currentNode.getParent()
+        }
+        if let listItem = listItemNode {
+          let content = listItem.getTextContent()
+          let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
+          let children = listItem.getChildren()
+          let childrenCount = children.count
+
+          // Determine if list item is truly empty:
+          // 1. No children at all, OR
+          // 2. Single child that is a TextNode with empty/whitespace-only content
+          var isTrulyEmpty = false
+          if childrenCount == 0 {
+            isTrulyEmpty = true
+          } else if childrenCount == 1, let textNode = children.first as? TextNode {
+            let textContent = textNode.getTextContent().trimmingCharacters(in: .whitespacesAndNewlines)
+            isTrulyEmpty = textContent.isEmpty
+          }
+          // If there are multiple children or non-TextNode children (like nested lists), don't exit
+
+          print("📝 LEXICAL found list item, content: '\(content)', children: \(childrenCount), isTrulyEmpty: \(isTrulyEmpty)")
+
+          if isTrulyEmpty {
+            // Empty list item - exit the list by inserting paragraph AFTER the list
+            print("📝 LEXICAL exiting list on empty item")
+            if let listNode = listItem.getParent() {
+              let paragraph = createParagraphNode()
+              let listChildren = listNode.getChildren()
+              if listChildren.count == 1 {
+                // Only item - replace entire list with paragraph
+                try listNode.replace(replaceWith: paragraph)
+              } else {
+                // Multiple items - remove empty item and insert paragraph after list
+                try listItem.remove()
+                try listNode.insertAfter(nodeToInsert: paragraph)
+              }
+              _ = try paragraph.select(anchorOffset: 0, focusOffset: 0)
+              handledByListExit = true
+              print("📝 LEXICAL list exit completed")
+            }
+          }
+        }
+      }
+      if !handledByListExit {
+        print("📝 LEXICAL dispatching insertParagraph command")
+        editor.dispatchCommand(type: .insertParagraph)
+      }
     } else if text == "\u{2028}" {
-      print("📝 LEXICAL inserting line break")
-      try selection.insertLineBreak(selectStart: false)
+      print("📝 LEXICAL dispatching insertLineBreak command")
+      // Dispatch command to allow plugins to intercept
+      editor.dispatchCommand(type: .insertLineBreak)
     } else {
       print("📝 LEXICAL calling selection.insertText")
       try selection.insertText(text)

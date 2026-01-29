@@ -32,6 +32,7 @@ public class EditorHistory {
   var prevChangeType: ChangeType
   private var isApplyingChange = false
   private var isUndoingOrRedoing = false
+  internal var isPaused = false
   private var lastTextContent: String = ""
   private var restoringState: EditorState?  // Track state being restored during undo/redo
 
@@ -48,9 +49,10 @@ public class EditorHistory {
     prevEditorState: EditorState,
     dirtyNodes: DirtyNodeMap
   ) {
-    // Skip if we're in the middle of an undo/redo operation
+    // Skip if we're in the middle of an undo/redo operation or recording is paused
     // This prevents the undo/redo state restoration from being recorded as a new change
-    guard !isUndoingOrRedoing else { return }
+    // isPaused is used during operations like importMarkdown that rebuild the tree
+    guard !isUndoingOrRedoing && !isPaused else { return }
 
     // Prevent re-entrancy
     guard !isApplyingChange else { return }
@@ -101,15 +103,45 @@ public class EditorHistory {
     // 1. Selection-only change - we don't want to track
     // 2. Formatting change (bold, italic, etc.) - we DO want to track
     //
-    // Since we can't easily distinguish, we'll track all state changes
-    // The editor state comparison already filtered out truly identical states
+    // We distinguish by comparing node maps directly. If only the selection
+    // changed, the node maps will be identical. If formatting changed,
+    // at least one node will differ (different format attributes).
+    // Note: dirtyNodes from update listeners is always empty (captured before
+    // the update closure runs in beginUpdate), so we can't use it here.
+    let hasContentChange: Bool
+    if hasTextChange {
+      hasContentChange = true
+    } else if let currentEntry = historyState.current {
+      // Compare node maps to detect formatting/structural changes
+      let currentNodeMap = editorState.getNodeMap()
+      let previousNodeMap = currentEntry.editorState.getNodeMap()
+      if currentNodeMap.count != previousNodeMap.count {
+        hasContentChange = true
+      } else {
+        var nodesMatch = true
+        for (key, node) in currentNodeMap {
+          if previousNodeMap[key] != node {
+            nodesMatch = false
+            break
+          }
+        }
+        hasContentChange = !nodesMatch
+      }
+    } else {
+      hasContentChange = true
+    }
 
     // Update lastTextContent for future comparisons
     lastTextContent = currentTextContent
 
-    // Always consider it a change worth tracking if we got here
-    // (state is different from current history entry)
-    let hasContentChange = true
+    // If only selection changed (no content/formatting change), update the current
+    // entry's selection but don't create a new history entry
+    if !hasContentChange {
+      if historyState.current != nil {
+        historyState.current?.undoSelection = editorState.selection?.clone() as? RangeSelection
+      }
+      return
+    }
 
     // Track if this is the first change (current was nil)
     let isFirstChange = historyState.current == nil
@@ -192,13 +224,17 @@ public class EditorHistory {
     } catch {}
 
     do {
-      if let editor = historyStateEntry.editor,
-        let undoSelection = historyStateEntry.undoSelection
-      {
-        try editor.setEditorState(historyStateEntry.editorState.clone(selection: undoSelection))
-        historyStateEntry.editor = editor
-        editor.dispatchCommand(type: .updatePlaceholderVisibility)
+      // Always restore the editor state, even if undoSelection is nil.
+      // Previous code skipped setEditorState when undoSelection was nil,
+      // causing undo to silently fail (stacks modified but editor unchanged).
+      let stateToRestore: EditorState
+      if let undoSelection = historyStateEntry.undoSelection {
+        stateToRestore = historyStateEntry.editorState.clone(selection: undoSelection)
+      } else {
+        stateToRestore = historyStateEntry.editorState
       }
+      try editor.setEditorState(stateToRestore)
+      editor.dispatchCommand(type: .updatePlaceholderVisibility)
     } catch {
       editor.log(.other, .warning, "undo: Failed to setEditorState: \(error.localizedDescription)")
     }
@@ -206,10 +242,8 @@ public class EditorHistory {
     // Reset flag AFTER setEditorState completes
     isUndoingOrRedoing = false
 
-    // Dispatch commands after flag is reset to update UI properly
-    if externalHistoryState.undoStack.count == 0 {
-      editor.dispatchCommand(type: .canUndo, payload: false)
-    }
+    // Always dispatch both canUndo and canRedo to ensure UI stays in sync
+    editor.dispatchCommand(type: .canUndo, payload: externalHistoryState.undoStack.count > 0)
     editor.dispatchCommand(type: .canRedo, payload: true)
 
     self.externalHistoryState = externalHistoryState
@@ -242,7 +276,14 @@ public class EditorHistory {
     } catch {}
 
     do {
-      try editor.setEditorState(historyStateEntry.editorState.clone(selection: historyStateEntry.undoSelection))
+      // Always restore the editor state, even if undoSelection is nil
+      let stateToRestore: EditorState
+      if let undoSelection = historyStateEntry.undoSelection {
+        stateToRestore = historyStateEntry.editorState.clone(selection: undoSelection)
+      } else {
+        stateToRestore = historyStateEntry.editorState
+      }
+      try editor.setEditorState(stateToRestore)
       editor.dispatchCommand(type: .updatePlaceholderVisibility)
     } catch {
       editor.log(.other, .warning, "redo: Failed to setEditorState: \(error.localizedDescription)")
@@ -251,11 +292,9 @@ public class EditorHistory {
     // Reset flag AFTER setEditorState completes
     isUndoingOrRedoing = false
 
-    // Dispatch commands after flag is reset to update UI properly
+    // Always dispatch both canUndo and canRedo to ensure UI stays in sync
     editor.dispatchCommand(type: .canUndo, payload: true)
-    if externalHistoryState.redoStack.count == 0 {
-      editor.dispatchCommand(type: .canRedo, payload: false)
-    }
+    editor.dispatchCommand(type: .canRedo, payload: externalHistoryState.redoStack.count > 0)
 
     self.externalHistoryState = externalHistoryState
   }

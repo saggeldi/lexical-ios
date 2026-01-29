@@ -249,7 +249,9 @@ public class ListItemNode: ElementNode {
     let node: ListItemNode = getLatest()
     let listNode = node.getParent() as? ListNode
 
-    var attributes: [NSAttributedString.Key: Any] = theme.listItem ?? [:]
+    // Use getValue with the actual NodeType to ensure correct theme lookup
+    // (theme.listItem uses camelCase "listItem" but NodeType is "listitem")
+    var attributes: [NSAttributedString.Key: Any] = theme.getValue(.listItem, withSubtype: nil) ?? theme.listItem ?? [:]
     attributes[.paddingHead] = attributes[.paddingHead] ?? theme.indentSize
 
     if node.getChildren().first is ListNode {

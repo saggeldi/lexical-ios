@@ -43,6 +43,17 @@ open class EditorHistoryPlugin: Plugin {
     }
   }
 
+  /// Temporarily pause history recording. Use during operations like
+  /// importMarkdown that rebuild the editor tree but shouldn't create history entries.
+  public func pauseRecording() {
+    editorHistory?.isPaused = true
+  }
+
+  /// Resume history recording after a pause.
+  public func resumeRecording() {
+    editorHistory?.isPaused = false
+  }
+
   public var canUndo: Bool {
     get {
       guard let historyState else {

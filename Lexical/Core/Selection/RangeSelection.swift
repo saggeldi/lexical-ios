@@ -1070,7 +1070,7 @@ public class RangeSelection: BaseSelection {
     self.style = ""
   }
 
-  internal func formatText(formatType: TextFormatType) throws {
+  public func formatText(formatType: TextFormatType) throws {
     if isCollapsed() {
       toggleFormat(type: formatType)
       return

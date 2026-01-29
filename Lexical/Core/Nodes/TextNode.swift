@@ -285,12 +285,29 @@ open class TextNode: Node {
       format = TextFormat()
     }
 
-    if format.bold {
-      attributeDictionary[.bold] = true
-    }
-
-    if format.italic {
-      attributeDictionary[.italic] = true
+    // Check for combined bold+italic first
+    if format.bold && format.italic {
+      if let themeDict = theme.textBoldItalic {
+        attributeDictionary.merge(themeDict) { (_, new) in new }
+      } else {
+        // Fallback to symbolic traits if theme doesn't provide combined font
+        attributeDictionary[.bold] = true
+        attributeDictionary[.italic] = true
+      }
+    } else if format.bold {
+      if let themeDict = theme.textBold {
+        attributeDictionary.merge(themeDict) { (_, new) in new }
+      } else {
+        // Fallback to symbolic traits if theme doesn't provide bold font
+        attributeDictionary[.bold] = true
+      }
+    } else if format.italic {
+      if let themeDict = theme.textItalic {
+        attributeDictionary.merge(themeDict) { (_, new) in new }
+      } else {
+        // Fallback to symbolic traits if theme doesn't provide italic font
+        attributeDictionary[.italic] = true
+      }
     }
 
     if format.underline {
