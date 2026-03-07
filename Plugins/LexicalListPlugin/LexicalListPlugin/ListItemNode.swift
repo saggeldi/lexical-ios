@@ -173,6 +173,15 @@ public class ListItemNode: ElementNode {
     return newElement
   }
 
+  override public func getPostamble() -> String {
+    // Empty list items always emit a newline so the bullet character is rendered
+    // immediately on a newly-created item, before any text is typed.
+    if getChildren().isEmpty {
+      return "\n"
+    }
+    return super.getPostamble()
+  }
+
   override public func collapseAtStart(selection: RangeSelection) throws -> Bool {
     let paragraph = createParagraphNode()
     let children = self.getChildren()
