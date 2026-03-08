@@ -316,7 +316,7 @@ open class ElementNode: Node {
     return ""
   }
 
-  override public func getPostamble() -> String {
+  override open func getPostamble() -> String {
     let nextSibling = getNextSibling()
 
     if nextSibling == nil {
